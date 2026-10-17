@@ -1,0 +1,3 @@
+[submodule "mlkem-PS/mlkem"]
+	path = mlkem-PS/mlkem
+	url = https://github.com/tranhgocode/mlkem_project.git
