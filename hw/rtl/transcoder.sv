@@ -4,8 +4,6 @@
  * Date         : 2026-10-27
  * Description  : Key and polynomial packing, copying, and output serialization.
  */
-`timescale 1ns / 1ps
-
 module transcoder (
   input logic clk_i,
   input logic rst_ni,

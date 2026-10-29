@@ -1,6 +1,6 @@
 /*
  * Project      : ML-KEM-768 Hardware Accelerator
- * Author       : Chien Pham (user)
+ * Author       : Chien Pham
  * Date         : 2026-10-27
  * Description  : Defines the generated Kyber NTT twiddle-factor table.
  */

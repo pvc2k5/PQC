@@ -117,6 +117,7 @@ module bfu_top (
       srcB_s2 <= '0;
       hilo_s2 <= 1'b0;
       valid_s2 <= 1'b0;
+      fqmul_s2 <= 1'b0;
       selKD_s2 <= 1'b0;
       selNTT_s2 <= 1'b0;
       resSub_s2 <= '0;

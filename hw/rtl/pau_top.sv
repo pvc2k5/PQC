@@ -34,36 +34,14 @@ module pau_top #(
   input logic [31:0] bram_a_rdata_i
 );
 
-  // State values support legacy NTT command sequencing.
+  // Command recovery states retain their original encodings.
   typedef enum logic [5:0] {
-    IDLE,
-    NA,
-    NB,
-    NC,
-    NI,
-    NW,
-    NORM_A,
-    WRITE_A,
-    NORM_B,
-    WRITE_B,
-    DONE,
-    FLUSH,
-    NORM_WAIT
+    IDLE = 6'd0,
+    DONE = 6'd10,
+    FLUSH = 6'd11
   } state_t;
   state_t state_w;
-  state_t norm_source_w;
-  logic [1:0] bank_w;
-  logic [2:0] slot_w;
   logic [2:0] flush_count_w;
-  logic [8:0] len_w;
-  logic [8:0] group_w;
-  logic [8:0] j_w;
-  logic [7:0] k_w;
-  logic [31:0] a_w;
-  logic [31:0] b_w;
-  logic [31:0] raw_a_w;
-  logic [31:0] raw_b_w;
-  logic [31:0] word_w;
   logic [15:0] norm0_w;
   logic [15:0] norm1_w;
   logic [11:0] canon0_w;
@@ -78,7 +56,7 @@ module pau_top #(
   logic [31:0] result_b_w;
   logic norm_start_w;
   logic norm_valid_w;
-  // NTT work is independent of the legacy command FSM. The metadata queue
+  // NTT work is independent of the command recovery FSM. The metadata queue
   // follows accepted BFU requests; the paired-write queue absorbs the two
   // consecutive canonicalizer results before their dual-port commit.
   logic reg_nt_busy;
@@ -140,8 +118,8 @@ module pau_top #(
     w_nt_admit = reg_nt_busy && !reg_nt_slot && reg_nt_issue_count < 64 &&
         (reg_nt_issue_count - reg_nt_write_count) < 16 && reg_meta_count < 4'd8;
     w_nt_issue = reg_nt_busy && reg_nt_slot && reg_nt_read_pending;
-    w_nt_bfu_a = a_w;
-    w_nt_bfu_b = b_w;
+    w_nt_bfu_a = 32'd0;
+    w_nt_bfu_b = 32'd0;
     if (w_nt_issue) begin
       w_nt_bfu_a = bram_a_rdata_i;
       w_nt_bfu_b = bram_rdata_i;
@@ -182,8 +160,6 @@ module pau_top #(
   logic [7:0] reg_rm_pair;
   logic [7:0] reg_rm_blk;
   logic [7:0] reg_rm_valid;
-  logic [6:0] reg_rm_pair_c[0:7];
-  logic [2:0] reg_rm_age[0:7];
   logic [31:0] reg_rm_as_a[0:2][0:7];
   logic [31:0] reg_rm_as_b[0:2][0:7];
   logic [31:0] reg_rm_di[0:2][0:7];
@@ -195,14 +171,6 @@ module pau_top #(
   logic [23:0] reg_rm_acc[0:7];
   logic [23:0] reg_rm_sn[0:7];
   logic [23:0] reg_rm_fi[0:7];
-  logic [2:0] reg_rm_pend_di[0:7];
-  logic [2:0] reg_rm_pend_cr[0:7];
-  logic [2:0] reg_rm_pend_ga[0:7];
-  logic [2:0] reg_rm_pend_pn[0:7];
-  logic [2:0] reg_rm_pend_ac[0:7];
-  logic [7:0] reg_rm_pend_sc;
-  logic [7:0] reg_rm_pend_sn;
-  logic [7:0] reg_rm_pend_en;
   logic [5:0] reg_rm_bfu_tagv;
   logic [5:0] reg_rm_can_tagv;
   logic [6:0] reg_rm_bfu_tag[0:5];
@@ -561,7 +529,7 @@ module pau_top #(
     .hilo_i       (1'b0),
     .srcA_i       (bfu_a_w),
     .srcB_i       (bfu_b_w),
-    .zeta_addr_i  (reg_nt_busy ? {reg_nt_pend_k, reg_nt_pend_k} : {k_w, k_w}),
+    .zeta_addr_i  (reg_nt_busy ? {reg_nt_pend_k, reg_nt_pend_k} : 16'd0),
     .validResult_o(bfu_valid_w),
     .resultA_o    (result_a_w),
     .resultB_o    (result_b_w)
@@ -577,10 +545,10 @@ module pau_top #(
     bfu_b_w = w_rm_bfu_fire ? w_rm_bfu_b : w_nt_bfu_b;
     norm0_w = w_rm_can_fire ?
         w_rm_can_in0 : (w_nt_canon_valid ? (reg_nt_feed_b ? reg_nt_raw_b[15:0] : result_a_w[15:0]) :
-                        (state_w == NORM_B ? raw_b_w[15:0] : raw_a_w[15:0]));
+                        16'd0);
     norm1_w = w_rm_can_fire ? w_rm_can_in1 :
         (w_nt_canon_valid ? (reg_nt_feed_b ? reg_nt_raw_b[31:16] : result_a_w[31:16]) :
-         (state_w == NORM_B ? raw_b_w[31:16] : raw_a_w[31:16]));
+         16'd0);
   end
   // p_com_pau_sts: command-interface status outputs.
   always_comb begin : p_com_pau_sts
@@ -596,30 +564,9 @@ module pau_top #(
     bram_a_wdata_o = 0;
     bram_en_o = 0;
     bram_we_o = 0;
-    bram_bank_o = bank_w;
+    bram_bank_o = 2'd0;
     bram_addr_o = 0;
-    bram_wdata_o = word_w;
-    case (state_w)
-      NA: begin
-        bram_en_o = 1;
-        bram_addr_o = {slot_w, j_w[7:1]};
-      end
-      NB: begin
-        bram_en_o = 1;
-        bram_addr_o = ({7'd0, slot_w} << 7) + ((j_w + len_w) >> 1);
-      end
-      WRITE_A: begin
-        bram_en_o = 1;
-        bram_we_o = 1;
-        bram_addr_o = {slot_w, j_w[7:1]};
-      end
-      WRITE_B: begin
-        bram_en_o = 1;
-        bram_we_o = 1;
-        bram_addr_o = ({7'd0, slot_w} << 7) + ((j_w + len_w) >> 1);
-      end
-      default: ;
-    endcase
+    bram_wdata_o = 32'd0;
     if (reg_nt_busy) begin
       bram_bank_o = reg_nt_bank;
       if (w_nt_admit) begin
@@ -860,28 +807,15 @@ module pau_top #(
     end
   end
   // p_ff_rm_engine: context file, tag pipes, valid-driven capture, grant and
-  // release for the II=12 ROW_MAC machine. Reservation bits (pend_*) are set at
-  // issue and cleared at capture; a result arriving without its reservation is
-  // a design error, detected from the testbench (no assertions in design RTL).
+  // release for the II=12 ROW_MAC machine. Tags identify each issued result
+  // through the unchanged BFU and canonicalizer pipelines.
   // On soft_rst both memory ports are masked the same cycle (drive-side gate),
   // every context/tag/delayed event is voided here and the arithmetic pipelines
   // flush via flush_w during the FLUSH state before the next command.
   always_ff @(posedge clk_i or negedge rst_ni) begin : p_ff_rm_engine
     if (!rst_ni) begin
       state_w <= IDLE;
-      norm_source_w <= IDLE;
-      bank_w <= 0;
-      slot_w <= 0;
       flush_count_w <= 0;
-      len_w <= 0;
-      group_w <= 0;
-      j_w <= 0;
-      k_w <= 0;
-      a_w <= 0;
-      b_w <= 0;
-      raw_a_w <= 0;
-      raw_b_w <= 0;
-      word_w <= 0;
       reg_rm_busy <= 1'b0;
       reg_rm_done <= 1'b0;
       reg_rm_row <= 2'd0;
@@ -909,10 +843,6 @@ module pau_top #(
     end else if (soft_rst_i) begin
       state_w <= FLUSH;
       flush_count_w <= 0;
-      a_w <= 0;
-      b_w <= 0;
-      raw_a_w <= 0;
-      raw_b_w <= 0;
       reg_rm_busy <= 1'b0;
       reg_rm_done <= 1'b0;
       reg_rm_pair <= 8'd0;
@@ -928,25 +858,6 @@ module pau_top #(
         reg_rm_slot <= (reg_rm_slot == 4'd11) ? 4'd0 : (reg_rm_slot + 4'd1);
         if (reg_rm_slot == 4'd11) reg_rm_blk <= reg_rm_blk + 8'd1;
       end
-      // age++ at slot-11 edges for contexts older than the youngest block
-      if (reg_rm_busy && (reg_rm_slot == 4'd11)) begin
-        if (reg_rm_valid[0] && ({1'b0, reg_rm_pair_c[0]} < reg_rm_blk))
-          reg_rm_age[0] <= reg_rm_age[0] + 3'd1;
-        if (reg_rm_valid[1] && ({1'b0, reg_rm_pair_c[1]} < reg_rm_blk))
-          reg_rm_age[1] <= reg_rm_age[1] + 3'd1;
-        if (reg_rm_valid[2] && ({1'b0, reg_rm_pair_c[2]} < reg_rm_blk))
-          reg_rm_age[2] <= reg_rm_age[2] + 3'd1;
-        if (reg_rm_valid[3] && ({1'b0, reg_rm_pair_c[3]} < reg_rm_blk))
-          reg_rm_age[3] <= reg_rm_age[3] + 3'd1;
-        if (reg_rm_valid[4] && ({1'b0, reg_rm_pair_c[4]} < reg_rm_blk))
-          reg_rm_age[4] <= reg_rm_age[4] + 3'd1;
-        if (reg_rm_valid[5] && ({1'b0, reg_rm_pair_c[5]} < reg_rm_blk))
-          reg_rm_age[5] <= reg_rm_age[5] + 3'd1;
-        if (reg_rm_valid[6] && ({1'b0, reg_rm_pair_c[6]} < reg_rm_blk))
-          reg_rm_age[6] <= reg_rm_age[6] + 3'd1;
-        if (reg_rm_valid[7] && ({1'b0, reg_rm_pair_c[7]} < reg_rm_blk))
-          reg_rm_age[7] <= reg_rm_age[7] + 3'd1;
-      end
       if (w_rm_gnt) begin
         reg_rm_busy <= 1'b1;
         reg_rm_pair <= w_rm_accept ? 8'd1 : (reg_rm_pair + 8'd1);
@@ -956,17 +867,7 @@ module pau_top #(
           reg_rm_row <= pau_row_i;
         end
         reg_rm_valid[w_rm_gnt_idx] <= 1'b1;
-        reg_rm_pair_c[w_rm_gnt_idx] <= w_rm_gnt_pair;
-        reg_rm_age[w_rm_gnt_idx] <= 3'd0;
         reg_rm_acc[w_rm_gnt_idx] <= 24'd0;
-        reg_rm_pend_di[w_rm_gnt_idx] <= 3'd0;
-        reg_rm_pend_cr[w_rm_gnt_idx] <= 3'd0;
-        reg_rm_pend_ga[w_rm_gnt_idx] <= 3'd0;
-        reg_rm_pend_pn[w_rm_gnt_idx] <= 3'd0;
-        reg_rm_pend_ac[w_rm_gnt_idx] <= 3'd0;
-        reg_rm_pend_sc[w_rm_gnt_idx] <= 1'b0;
-        reg_rm_pend_sn[w_rm_gnt_idx] <= 1'b0;
-        reg_rm_pend_en[w_rm_gnt_idx] <= 1'b0;
       end
       if (reg_rm_busy && w_rm_v5 && (reg_rm_slot == 4'd5)) begin
         reg_rm_valid[w_rm_i5] <= 1'b0;
@@ -982,16 +883,6 @@ module pau_top #(
       reg_rm_bfu_tag[3] <= reg_rm_bfu_tag[2];
       reg_rm_bfu_tag[4] <= reg_rm_bfu_tag[3];
       reg_rm_bfu_tag[5] <= reg_rm_bfu_tag[4];
-      if (w_rm_bfu_fire)
-        case (w_rm_bfu_op)
-          4'd0, 4'd2, 4'd4: reg_rm_pend_di[w_rm_bfu_ctx][w_rm_bfu_op[2:1]] <= 1'b1;
-          4'd1, 4'd3, 4'd5: reg_rm_pend_cr[w_rm_bfu_ctx][w_rm_bfu_op[2:1]] <= 1'b1;
-          4'd6: reg_rm_pend_ga[w_rm_bfu_ctx][0] <= 1'b1;
-          4'd7: reg_rm_pend_ga[w_rm_bfu_ctx][1] <= 1'b1;
-          4'd8: reg_rm_pend_ga[w_rm_bfu_ctx][2] <= 1'b1;
-          4'd9: reg_rm_pend_sc[w_rm_bfu_ctx] <= 1'b1;
-          default: ;
-        endcase
       reg_rm_can_tagv <= {reg_rm_can_tagv[4:0], w_rm_can_fire};
       if (w_rm_can_fire) reg_rm_can_tag[0] <= {w_rm_can_ctx, w_rm_can_op};
       reg_rm_can_tag[1] <= reg_rm_can_tag[0];
@@ -999,41 +890,25 @@ module pau_top #(
       reg_rm_can_tag[3] <= reg_rm_can_tag[2];
       reg_rm_can_tag[4] <= reg_rm_can_tag[3];
       reg_rm_can_tag[5] <= reg_rm_can_tag[4];
-      if (w_rm_can_fire)
-        case (w_rm_can_op)
-          3'd0, 3'd1, 3'd2: reg_rm_pend_pn[w_rm_can_ctx][w_rm_can_op[1:0]] <= 1'b1;
-          3'd3: reg_rm_pend_ac[w_rm_can_ctx][0] <= 1'b1;
-          3'd4: reg_rm_pend_ac[w_rm_can_ctx][1] <= 1'b1;
-          3'd5: reg_rm_pend_ac[w_rm_can_ctx][2] <= 1'b1;
-          3'd6: reg_rm_pend_sn[w_rm_can_ctx] <= 1'b1;
-          3'd7: reg_rm_pend_en[w_rm_can_ctx] <= 1'b1;
-          default: ;
-        endcase
       if (reg_rm_busy && bfu_valid_w && reg_rm_bfu_tagv[5])
         case (reg_rm_bfu_tag[5][3:0])
           4'd0, 4'd2, 4'd4: begin
             reg_rm_di[reg_rm_bfu_tag[5][2:1]][reg_rm_bfu_tag[5][6:4]] <= result_a_w;
-            reg_rm_pend_di[reg_rm_bfu_tag[5][6:4]][reg_rm_bfu_tag[5][2:1]] <= 1'b0;
           end
           4'd1, 4'd3, 4'd5: begin
             reg_rm_cr[reg_rm_bfu_tag[5][2:1]][reg_rm_bfu_tag[5][6:4]] <= result_a_w;
-            reg_rm_pend_cr[reg_rm_bfu_tag[5][6:4]][reg_rm_bfu_tag[5][2:1]] <= 1'b0;
           end
           4'd6: begin
             reg_rm_ga[0][reg_rm_bfu_tag[5][6:4]] <= result_a_w[15:0];
-            reg_rm_pend_ga[reg_rm_bfu_tag[5][6:4]][0] <= 1'b0;
           end
           4'd7: begin
             reg_rm_ga[1][reg_rm_bfu_tag[5][6:4]] <= result_a_w[15:0];
-            reg_rm_pend_ga[reg_rm_bfu_tag[5][6:4]][1] <= 1'b0;
           end
           4'd8: begin
             reg_rm_ga[2][reg_rm_bfu_tag[5][6:4]] <= result_a_w[15:0];
-            reg_rm_pend_ga[reg_rm_bfu_tag[5][6:4]][2] <= 1'b0;
           end
           4'd9: begin
             reg_rm_sc[reg_rm_bfu_tag[5][6:4]] <= result_a_w;
-            reg_rm_pend_sc[reg_rm_bfu_tag[5][6:4]] <= 1'b0;
           end
           default: ;
         endcase
@@ -1041,27 +916,21 @@ module pau_top #(
         case (reg_rm_can_tag[5][2:0])
           3'd0, 3'd1, 3'd2: begin
             reg_rm_c[reg_rm_can_tag[5][1:0]][reg_rm_can_tag[5][5:3]] <= {canon1_w, canon0_w};
-            reg_rm_pend_pn[reg_rm_can_tag[5][5:3]][reg_rm_can_tag[5][1:0]] <= 1'b0;
           end
           3'd3: begin
             reg_rm_acc[reg_rm_can_tag[5][5:3]] <= {canon1_w, canon0_w};
-            reg_rm_pend_ac[reg_rm_can_tag[5][5:3]][0] <= 1'b0;
           end
           3'd4: begin
             reg_rm_acc[reg_rm_can_tag[5][5:3]] <= {canon1_w, canon0_w};
-            reg_rm_pend_ac[reg_rm_can_tag[5][5:3]][1] <= 1'b0;
           end
           3'd5: begin
             reg_rm_acc[reg_rm_can_tag[5][5:3]] <= {canon1_w, canon0_w};
-            reg_rm_pend_ac[reg_rm_can_tag[5][5:3]][2] <= 1'b0;
           end
           3'd6: begin
             reg_rm_sn[reg_rm_can_tag[5][5:3]] <= {canon1_w, canon0_w};
-            reg_rm_pend_sn[reg_rm_can_tag[5][5:3]] <= 1'b0;
           end
           3'd7: begin
             reg_rm_fi[reg_rm_can_tag[5][5:3]] <= {canon1_w, canon0_w};
-            reg_rm_pend_en[reg_rm_can_tag[5][5:3]] <= 1'b0;
           end
           default: ;
         endcase
@@ -1075,59 +944,7 @@ module pau_top #(
       reg_rm_capv <= w_rm_cap_set;
       reg_rm_capctx <= w_rm_cap_set_ctx;
       reg_rm_capdst <= w_rm_cap_set_dst;
-      // Legacy NTT transitions remain alongside the pipelined schedulers.
       case (state_w)
-        NA: state_w <= NB;
-        NB: begin
-          a_w <= bram_rdata_i;
-          state_w <= NC;
-        end
-        NC: begin
-          b_w <= bram_rdata_i;
-          state_w <= NI;
-        end
-        NI: state_w <= NW;
-        NW:
-        if (bfu_valid_w) begin
-          raw_a_w <= result_a_w;
-          raw_b_w <= result_b_w;
-          state_w <= NORM_A;
-        end
-        NORM_A, NORM_B: begin
-          norm_source_w <= state_w;
-          state_w <= NORM_WAIT;
-        end
-        NORM_WAIT:
-        if (norm_valid_w)
-          case (norm_source_w)
-            NORM_A: begin
-              word_w <= {4'd0, canon1_w, 4'd0, canon0_w};
-              state_w <= WRITE_A;
-            end
-            NORM_B: begin
-              word_w <= {4'd0, canon1_w, 4'd0, canon0_w};
-              state_w <= WRITE_B;
-            end
-            default: state_w <= IDLE;
-          endcase
-        WRITE_A: state_w <= NORM_B;
-        WRITE_B: begin
-          if (j_w + 9'd2 < group_w + len_w) begin
-            j_w <= j_w + 9'd2;
-            state_w <= NA;
-          end else if (group_w + (len_w << 1) < 9'd256) begin
-            group_w <= group_w + (len_w << 1);
-            j_w <= group_w + (len_w << 1);
-            k_w <= k_w + 1'b1;
-            state_w <= NA;
-          end else if (len_w > 2) begin
-            len_w <= len_w >> 1;
-            group_w <= 0;
-            j_w <= 0;
-            k_w <= k_w + 1'b1;
-            state_w <= NA;
-          end else state_w <= DONE;
-        end
         DONE: state_w <= IDLE;
         FLUSH:
         if (flush_count_w == 7) state_w <= IDLE;

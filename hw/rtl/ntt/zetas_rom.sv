@@ -15,7 +15,7 @@
 
 /*
  * Project      : ML-KEM-768 Hardware Accelerator
- * Author       : Chien Pham (user)
+ * Author       : Chien Pham
  * Date         : 2026-10-27
  * Description  : Provides the Kyber NTT twiddle factors by address.
  */

@@ -5,26 +5,6 @@
  * Description  : Canonical and pipelined Barrett reduction for ML-KEM residues.
  */
 
-module canonical_reduce (
-  input logic [15:0] data_i,
-  output logic [11:0] data_o
-);
-
-  logic [15:0] centered_w;
-  logic signed [16:0] corrected_w;
-  barrett_reduce u_barrett (
-    .src_i   (data_i),
-    .result_o(centered_w)
-  );
-
-  always_comb begin
-    corrected_w = {centered_w[15], centered_w};
-    if (corrected_w < 0) corrected_w = corrected_w + 17'sd3329;
-    if (corrected_w >= 17'sd3329) corrected_w = corrected_w - 17'sd3329;
-    data_o = corrected_w[11:0];
-  end
-endmodule
-
 // The rounded Barrett quotient is corrected into the canonical range.
 // Flush clears valid state while the data pipeline drains.
 module canonical_reduce_pipe (

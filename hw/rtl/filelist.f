@@ -6,8 +6,6 @@ rtl/keccak/keccak_stream.sv
 rtl/keccak/sha3_subsys.sv
 rtl/ntt/add_sub_32bit.sv
 rtl/ntt/barrett_reduce.sv
-rtl/ntt/montgomery_dilithium.sv
-rtl/ntt/montgomery_kyber.sv
 rtl/ntt/multiplier.sv
 rtl/ntt/bfu_multiplier.sv
 rtl/ntt/bfu_modred.sv
